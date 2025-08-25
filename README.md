@@ -1,6 +1,6 @@
 ## Fibonacci calculator
 
-Yeah, yeah, not that much of a project. It basically consumes the requests to spit out the answer, in this case, the fibonacci number. 
+It basically consumes the requests to spit out the answer, in this case, the fibonacci number. 
 But the case here, that we can calculate the value in the field of the complex numbers. Here is used Binet's formula(but when i derived it, i did't know that the guy has already done it some centuries ago).
 
 ## Why Binet's formula?

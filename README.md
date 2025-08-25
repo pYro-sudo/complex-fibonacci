@@ -1,4 +1,4 @@
-# Fibonacci Calculator Microservice
+# Fibonacci Calculator
 
 RESTful microservice for calculating Fibonacci numbers in the complex domain using Binet's formula implementation.
 

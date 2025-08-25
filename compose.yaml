@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  fib-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fibonacci-app
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - APP_PORT=8080
+      - JAVA_OPTS=-Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.SLF4JLogDelegateFactory -Xmx512m
+    depends_on:
+      - redis
+    networks:
+      - fib-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: fibonacci-redis
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=
+    volumes:
+      - redis_data:/data
+    networks:
+      - fib-network
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+
+networks:
+  fib-network:
+    driver: bridge

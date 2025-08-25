@@ -76,6 +76,6 @@ Nevertheless, just use `curl` or `Postman`, for example, and write
 
 - `POST` request to `/fibonacci` `supplied with JSON` like `{"number": "4 5"}`, so the result is similar to
 
-  `curl -X POST http://localhost:8080/fibonacci \
-  -H "Content-Type: application/json" \
-  -d '{"number": "3.5 2.1"}'` but we can use commas as well
+  `curl -X POST http://localhost:8080/fibonacci
+  -H "Content-Type: application/json"
+  -d '{"number": "3.5 2.1"}'` but we can use commas as well, also keep an eye on the quoting signs

@@ -24,8 +24,8 @@ curl -X POST http://localhost:8080/fibonacci \
 ```
 
 **Number formats accepted:**
-- `"5"` (real number)
-- `"3.5,2.1"` (comma separator)
+- `"5"` (real number) 
+- `"3.5,2.1"` (comma separator, but note that the imaginary unit is omitted in requests)
 - `"3.5+2.1i"` (complex notation)
 - `"2.1i"` (imaginary number)
 

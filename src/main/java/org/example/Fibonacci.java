@@ -1,5 +1,9 @@
 package org.example;
 
+import io.github.resilience4j.ratelimiter.RateLimiter;
+import io.github.resilience4j.ratelimiter.RateLimiterConfig;
+import io.vertx.circuitbreaker.CircuitBreaker;
+import io.vertx.circuitbreaker.CircuitBreakerOptions;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Promise;
@@ -17,8 +21,11 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -28,15 +35,25 @@ public class Fibonacci extends AbstractVerticle {
     static private final Complex LOG_PHI = new Complex((1 + Math.sqrt(5)) / 2, 0).log();
     static private final Complex LOG_PSI = new Complex((1 - Math.sqrt(5)) / 2, 0).log();
 
+    private static final int RATE_LIMIT_REQUESTS = 100;
+    private static final int CIRCUIT_BREAKER_FAILURES = 5;
+    private static final long CIRCUIT_BREAKER_TIMEOUT = 5000;
+    private static final long CIRCUIT_BREAKER_RESET_TIMEOUT = 30000;
+
     private RedisAPI redisAPI;
     private ExecutorService executorService;
     private HttpServer server;
+    private CircuitBreaker circuitBreaker;
+    private RateLimiter globalRateLimiter;
+    private final Map<String, RateLimiter> clientRateLimiters = new ConcurrentHashMap<>();
 
     @Override
     public void start(Promise<Void> startPromise) {
         logger.info("Starting Fibonacci verticle");
         executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
-        logger.debug("Created executor service with {} threads", Runtime.getRuntime().availableProcessors() * 2);
+
+        initializeCircuitBreaker();
+        initializeRateLimiters();
 
         RedisOptions redisOptions = new RedisOptions()
                 .setConnectionString(System.getenv().getOrDefault("REDIS_URL", "redis://redis:6379"))
@@ -52,10 +69,51 @@ public class Fibonacci extends AbstractVerticle {
                 })
                 .onFailure(err -> {
                     logger.warn("Redis connection failed: {}", err.getMessage());
-                    logger.info("Continuing without cache...");
                     redisAPI = null;
                     setupHttpServer(startPromise);
                 });
+    }
+
+    private void initializeCircuitBreaker() {
+        circuitBreaker = CircuitBreaker.create("fibonacci-circuit-breaker", vertx,
+                new CircuitBreakerOptions()
+                        .setMaxFailures(CIRCUIT_BREAKER_FAILURES)
+                        .setTimeout(CIRCUIT_BREAKER_TIMEOUT)
+                        .setResetTimeout(CIRCUIT_BREAKER_RESET_TIMEOUT)
+                        .setNotificationPeriod(0)
+        );
+
+        circuitBreaker.openHandler(v -> logger.warn("Circuit breaker opened - too many failures"));
+        circuitBreaker.closeHandler(v -> logger.info("Circuit breaker closed - service recovered"));
+        circuitBreaker.halfOpenHandler(v -> logger.info("Circuit breaker half-open - testing if service recovered"));
+    }
+
+    private void initializeRateLimiters() {
+        RateLimiterConfig globalConfig = RateLimiterConfig.custom()
+                .limitRefreshPeriod(Duration.ofMinutes(1))
+                .limitForPeriod(RATE_LIMIT_REQUESTS)
+                .timeoutDuration(Duration.ofMillis(100))
+                .build();
+
+        globalRateLimiter = RateLimiter.of("global-rate-limiter", globalConfig);
+    }
+
+    private RateLimiter getClientRateLimiter(String clientId) {
+        return clientRateLimiters.computeIfAbsent(clientId, id -> {
+            RateLimiterConfig clientConfig = RateLimiterConfig.custom()
+                    .limitRefreshPeriod(Duration.ofMinutes(1))
+                    .limitForPeriod(RATE_LIMIT_REQUESTS / 2)
+                    .timeoutDuration(Duration.ofMillis(100))
+                    .build();
+            return RateLimiter.of("client-" + id, clientConfig);
+        });
+    }
+
+    private void cleanupOldRateLimiters() {
+        clientRateLimiters.entrySet().removeIf(entry -> {
+            RateLimiter limiter = entry.getValue();
+            return limiter.getMetrics().getNumberOfWaitingThreads() == 0;
+        });
     }
 
     private void setupHttpServer(Promise<Void> startPromise) {
@@ -63,40 +121,21 @@ public class Fibonacci extends AbstractVerticle {
         server = vertx.createHttpServer(new HttpServerOptions().setPort(8080));
 
         server.requestHandler(request -> {
-            logger.debug("Received {} request to {}", request.method(), request.path());
+            if (!checkRateLimit(request)) {
+                request.response()
+                        .setStatusCode(429)
+                        .end(new JsonObject()
+                                .put("error", "Rate limit exceeded")
+                                .put("retry_after", "60 seconds")
+                                .encode());
+                return;
+            }
 
             if (request.method().name().equals("POST") && request.path().equals("/fibonacci")) {
-                request.bodyHandler(body -> {
-                    try {
-                        JsonObject json = body.toJsonObject();
-                        String input = json.getString("number");
-                        logger.info("Processing POST request with input: {}", input);
-
-                        process(request, input);
-                    } catch (Exception e) {
-                        logger.warn("Invalid JSON format in POST request: {}", e.getMessage());
-                        request.response()
-                                .setStatusCode(400)
-                                .end(new JsonObject()
-                                        .put("error", "Invalid JSON format")
-                                        .encode());
-                    }
-                });
+                handlePostRequest(request);
             } else if (request.method().name().equals("GET") && request.path().equals("/fibonacci")) {
-                String input = request.getParam("number");
-                if (input != null) {
-                    logger.info("Processing GET request with input: {}", input);
-                    process(request, input);
-                } else {
-                    logger.warn("Missing 'number' parameter in GET request");
-                    request.response()
-                            .setStatusCode(400)
-                            .end(new JsonObject()
-                                    .put("error", "Missing 'number' parameter")
-                                    .encode());
-                }
+                handleGetRequest(request);
             } else {
-                logger.warn("Invalid request path: {}", request.path());
                 request.response()
                         .setStatusCode(404)
                         .end(new JsonObject()
@@ -107,39 +146,82 @@ public class Fibonacci extends AbstractVerticle {
 
         server.listen(8080, result -> {
             if (result.succeeded()) {
-                logger.info("HTTP server started successfully on port 8080");
-                logger.info("Send POST requests to /fibonacci with JSON: {\"number\": \"a b\"}");
-                logger.info("Or GET requests to /fibonacci?number=a+b");
                 startPromise.complete();
             } else {
-                logger.error("HTTP server startup failed: {}", result.cause().getMessage());
                 startPromise.fail(result.cause());
+            }
+        });
+
+        vertx.setPeriodic(300000, id -> cleanupOldRateLimiters());
+    }
+
+    private boolean checkRateLimit(HttpServerRequest request) {
+        String clientId = request.remoteAddress().host();
+
+        try {
+            RateLimiter.waitForPermission(globalRateLimiter);
+            RateLimiter clientLimiter = getClientRateLimiter(clientId);
+            RateLimiter.waitForPermission(clientLimiter);
+            return true;
+        } catch (Exception e) {
+            logger.debug("Rate limit exceeded for client: {}", clientId);
+            return false;
+        }
+    }
+
+    private void handlePostRequest(@NotNull HttpServerRequest request) {
+        request.bodyHandler(body -> {
+            try {
+                JsonObject json = body.toJsonObject();
+                String input = json.getString("number");
+                processWithCircuitBreaker(request, input);
+            } catch (Exception e) {
+                request.response()
+                        .setStatusCode(400)
+                        .end(new JsonObject()
+                                .put("error", "Invalid JSON format")
+                                .encode());
             }
         });
     }
 
-    private void process(HttpServerRequest request, String input) {
-        logger.debug("Processing input: {}", input);
-        processRequest(input)
-                .thenAccept(result -> {
-                    JsonObject response = new JsonObject()
-                            .put("input", input)
-                            .put("result", formatComplex(result));
+    private void handleGetRequest(@NotNull HttpServerRequest request) {
+        String input = request.getParam("number");
+        if (input != null) {
+            processWithCircuitBreaker(request, input);
+        } else {
+            request.response()
+                    .setStatusCode(400)
+                    .end(new JsonObject()
+                            .put("error", "Missing 'number' parameter")
+                            .encode());
+        }
+    }
 
-                    logger.info("Successfully processed input: {}, result: {}", input, formatComplex(result));
-                    request.response()
-                            .putHeader("Content-Type", "application/json")
-                            .end(response.encode());
-                })
-                .exceptionally(ex -> {
-                    logger.error("Error processing input {}: {}", input, ex.getMessage());
-                    request.response()
-                            .setStatusCode(400)
-                            .end(new JsonObject()
-                                    .put("error", ex.getMessage())
-                                    .encode());
-                    return null;
-                });
+    private void processWithCircuitBreaker(HttpServerRequest request, String input) {
+        circuitBreaker.executeWithFallback(promise ->
+                processRequest(input)
+                        .thenAccept(result -> {
+                            JsonObject response = new JsonObject()
+                                    .put("input", input)
+                                    .put("result", formatComplex(result));
+                            request.response()
+                                    .putHeader("Content-Type", "application/json")
+                                    .end(response.encode());
+                            promise.complete();
+                        })
+                        .exceptionally(ex -> {
+                            promise.fail(ex.getCause());
+                            return null;
+                        }), fallback -> {
+            request.response()
+                    .setStatusCode(503)
+                    .end(new JsonObject()
+                            .put("error", "Service temporarily unavailable")
+                            .put("message", "Circuit breaker open - too many failures")
+                            .encode());
+            return null;
+        });
     }
 
     @Contract("_ -> new")
@@ -147,10 +229,8 @@ public class Fibonacci extends AbstractVerticle {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 Complex z = parseComplex(input);
-                logger.debug("Parsed complex number: {}", formatComplex(z));
                 return execute(z).join();
             } catch (NumberFormatException e) {
-                logger.error("Number format error for input {}: {}", input, e.getMessage());
                 throw new RuntimeException(e.getMessage());
             }
         }, executorService);
@@ -158,63 +238,45 @@ public class Fibonacci extends AbstractVerticle {
 
     private CompletableFuture<Complex> execute(Complex z) {
         if (redisAPI == null) {
-            logger.debug("Cache not available, computing directly for: {}", formatComplex(z));
             return computeFibonacci(z);
         }
 
         String key = "fib:" + formatComplexForCache(z);
-        logger.debug("Checking cache for key: {}", key);
 
         return getFromCacheAsync(key)
                 .thenCompose(cachedResult -> {
                     if (cachedResult != null) {
-                        logger.info("Cache hit for key: {}", key);
                         return CompletableFuture.completedFuture(cachedResult);
                     }
 
-                    logger.debug("Cache miss for key: {}", key);
                     return computeFibonacci(z)
                             .thenCompose(result -> saveToCacheAsync(key, result)
-                                    .thenApply(__ -> {
-                                        logger.debug("Successfully cached result for key: {}", key);
-                                        return result;
-                                    })
-                                    .exceptionally(ex -> {
-                                        logger.warn("Failed to save to cache for key {}: {}", key, ex.getMessage());
-                                        return result;
-                                    }));
+                                    .thenApply(__ -> result)
+                                    .exceptionally(ex -> result));
                 })
-                .exceptionally(ex -> {
-                    logger.warn("Cache error for key {}, computing directly: {}", key, ex.getMessage());
-                    return computeFibonacci(z).join();
-                });
+                .exceptionally(ex -> computeFibonacci(z).join());
     }
 
     @Contract("_ -> new")
     private @NotNull CompletableFuture<Complex> computeFibonacci(Complex z) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                logger.debug("Computing Fibonacci for: {}", formatComplex(z));
                 Complex result = z.multiply(LOG_PHI).exp()
                         .subtract(z.multiply(LOG_PSI).exp())
                         .multiply(INV_SQRT_5);
 
                 if (result.isNaN() || result.isInfinite()) {
-                    logger.error("Numerical instability in Fibonacci computation for: {}", formatComplex(z));
                     throw new ArithmeticException("Numerical instability in Fibonacci computation");
                 }
 
-                logger.debug("Computation completed for: {}, result: {}", formatComplex(z), formatComplex(result));
                 return result;
             } catch (Exception e) {
-                logger.error("Fibonacci computation failed for {}: {}", formatComplex(z), e.getMessage());
                 throw new RuntimeException("Fibonacci computation via logarithms failed", e);
             }
         }, executorService);
     }
 
     private @NotNull CompletableFuture<Complex> getFromCacheAsync(String key) {
-        logger.trace("Getting from cache: {}", key);
         CompletableFuture<Complex> future = new CompletableFuture<>();
 
         vertx.executeBlocking(promise ->
@@ -223,14 +285,11 @@ public class Fibonacci extends AbstractVerticle {
                             if (response != null) {
                                 try {
                                     Complex result = parseComplexFromCache(response.toString());
-                                    logger.trace("Cache get successful for key: {}", key);
                                     promise.complete(result);
                                 } catch (Exception e) {
-                                    logger.warn("Failed to parse cached value for key {}: {}", key, e.getMessage());
                                     promise.fail(e);
                                 }
                             } else {
-                                logger.trace("Cache miss for key: {}", key);
                                 promise.complete(null);
                             }
                         })
@@ -238,7 +297,6 @@ public class Fibonacci extends AbstractVerticle {
             if (result.succeeded()) {
                 future.complete((Complex) result.result());
             } else {
-                logger.warn("Cache get failed for key {}: {}", key, result.cause().getMessage());
                 future.completeExceptionally(result.cause());
             }
         });
@@ -247,22 +305,17 @@ public class Fibonacci extends AbstractVerticle {
     }
 
     private @NotNull CompletableFuture<Void> saveToCacheAsync(String key, Complex result) {
-        logger.trace("Saving to cache: {} -> {}", key, formatComplex(result));
         CompletableFuture<Void> future = new CompletableFuture<>();
 
         vertx.executeBlocking(promise -> {
             String value = formatComplexForCache(result);
             redisAPI.setex(key, "3600", value)
-                    .onSuccess(__ -> {
-                        logger.trace("Cache save successful for key: {}", key);
-                        promise.complete();
-                    })
+                    .onSuccess(__ -> promise.complete())
                     .onFailure(promise::fail);
         }, false, asyncResult -> {
             if (asyncResult.succeeded()) {
                 future.complete(null);
             } else {
-                logger.warn("Cache save failed for key {}: {}", key, asyncResult.cause().getMessage());
                 future.completeExceptionally(asyncResult.cause());
             }
         });
@@ -271,28 +324,20 @@ public class Fibonacci extends AbstractVerticle {
     }
 
     private Complex parseComplex(@NotNull String input) {
-        try {
-            double[] values = Arrays.stream(
-                            input.replace(',', '.')
-                                    .replace('+', ' ')
-                                    .split(" "))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .mapToDouble(Double::parseDouble)
-                    .toArray();
+        double[] values = Arrays.stream(
+                        input.replace(',', '.')
+                                .replace('+', ' ')
+                                .split(" "))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .mapToDouble(Double::parseDouble)
+                .toArray();
 
-            Complex result = switch (values.length) {
-                case 1 -> new Complex(values[0], 0);
-                case 2 -> new Complex(values[0], values[1]);
-                default -> throw new NumberFormatException("Not supported amount of variables");
-            };
-
-            logger.debug("Successfully parsed input '{}' to complex number: {}", input, formatComplex(result));
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to parse input '{}': {}", input, e.getMessage());
-            throw e;
-        }
+        return switch (values.length) {
+            case 1 -> new Complex(values[0], 0);
+            case 2 -> new Complex(values[0], values[1]);
+            default -> throw new NumberFormatException("Not supported amount of variables");
+        };
     }
 
     private @NotNull String formatComplex(@NotNull Complex z) {
@@ -320,40 +365,31 @@ public class Fibonacci extends AbstractVerticle {
 
     @Contract("_ -> new")
     private @NotNull Complex parseComplexFromCache(@NotNull String cached) {
-        try {
-            String[] parts = cached.split(" ");
-            if (parts.length != 2) {
-                throw new RuntimeException("Invalid cache format: " + cached);
-            }
-
-            Complex result = new Complex(
-                    parts[0].equals("-0.0000000000000000") ? -0.0 : Double.parseDouble(parts[0]),
-                    parts[1].equals("-0.0000000000000000") ? -0.0 : Double.parseDouble(parts[1])
-            );
-
-            logger.trace("Successfully parsed cached value: {} -> {}", cached, formatComplex(result));
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to parse cached value '{}': {}", cached, e.getMessage());
-            throw e;
+        String[] parts = cached.split(" ");
+        if (parts.length != 2) {
+            throw new RuntimeException("Invalid cache format: " + cached);
         }
+
+        return new Complex(
+                parts[0].equals("-0.0000000000000000") ? -0.0 : Double.parseDouble(parts[0]),
+                parts[1].equals("-0.0000000000000000") ? -0.0 : Double.parseDouble(parts[1])
+        );
     }
 
     @Override
     public void stop() {
-        logger.info("Stopping Fibonacci verticle");
         if (server != null) {
             server.close();
-            logger.info("HTTP server stopped");
         }
         if (executorService != null) {
             executorService.shutdown();
-            logger.info("Executor service shutdown");
+        }
+        if (circuitBreaker != null) {
+            circuitBreaker.close();
         }
     }
 
     public static void main(String[] args) {
-        logger.info("Starting Fibonacci application");
         Vertx vertx = Vertx.vertx();
         vertx.deployVerticle(Fibonacci.class.getName(), new DeploymentOptions().setHa(true).setInstances(10))
                 .onSuccess(id -> logger.info("Verticle deployed successfully: {}", id))

@@ -7,7 +7,8 @@ RESTful microservice for calculating Fibonacci numbers in the complex domain usi
 - **Complex Number Support**: Calculate Fibonacci values for complex arguments
 - **High Performance**: Async I/O with Vert.x and Redis caching
 - **Resilience**: Circuit breaker and rate limiting patterns
-- **Dockerized**: Complete containerized deployment
+- **Provisioning/Metrics**: Prometheus, Grafana
+- **Dockerized**: Complete containerized deployment(Docker + Docker Compose)
 
 ## API Usage
 

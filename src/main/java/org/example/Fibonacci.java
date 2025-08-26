@@ -2,6 +2,7 @@ package org.example;
 
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import io.vertx.circuitbreaker.CircuitBreaker;
 import io.vertx.circuitbreaker.CircuitBreakerOptions;
 import io.vertx.core.AbstractVerticle;
@@ -24,10 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 public class Fibonacci extends AbstractVerticle {
     private static final Logger logger = LoggerFactory.getLogger(Fibonacci.class);
@@ -46,10 +44,15 @@ public class Fibonacci extends AbstractVerticle {
     private CircuitBreaker circuitBreaker;
     private RateLimiter globalRateLimiter;
     private final Map<String, RateLimiter> clientRateLimiters = new ConcurrentHashMap<>();
+    private PrometheusMeterRegistry prometheusRegistry;
 
     @Override
     public void start(Promise<Void> startPromise) {
-        logger.info("Starting Fibonacci verticle");
+        logger.info("Starting Fibonacci verticle with Prometheus metrics");
+
+        prometheusRegistry = new io.micrometer.prometheus.PrometheusMeterRegistry(
+                io.micrometer.prometheus.PrometheusConfig.DEFAULT);
+
         executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
 
         initializeCircuitBreaker();
@@ -83,9 +86,18 @@ public class Fibonacci extends AbstractVerticle {
                         .setNotificationPeriod(0)
         );
 
-        circuitBreaker.openHandler(v -> logger.warn("Circuit breaker opened - too many failures"));
-        circuitBreaker.closeHandler(v -> logger.info("Circuit breaker closed - service recovered"));
-        circuitBreaker.halfOpenHandler(v -> logger.info("Circuit breaker half-open - testing if service recovered"));
+        circuitBreaker.openHandler(v -> {
+            logger.warn("Circuit breaker opened - too many failures");
+            prometheusRegistry.counter("circuit_breaker_state_changes", "state", "open").increment();
+        });
+        circuitBreaker.closeHandler(v -> {
+            logger.info("Circuit breaker closed - service recovered");
+            prometheusRegistry.counter("circuit_breaker_state_changes", "state", "closed").increment();
+        });
+        circuitBreaker.halfOpenHandler(v -> {
+            logger.info("Circuit breaker half-open - testing if service recovered");
+            prometheusRegistry.counter("circuit_breaker_state_changes", "state", "half_open").increment();
+        });
     }
 
     private void initializeRateLimiters() {
@@ -117,11 +129,18 @@ public class Fibonacci extends AbstractVerticle {
     }
 
     private void setupHttpServer(Promise<Void> startPromise) {
-        logger.info("Setting up HTTP server on port 8080");
+        logger.info("Setting up HTTP server on port 8080 with Prometheus metrics endpoint");
         server = vertx.createHttpServer(new HttpServerOptions().setPort(8080));
 
         server.requestHandler(request -> {
+            prometheusRegistry.counter("http_requests_total",
+                            "path", request.path(),
+                            "method", request.method().toString(),
+                            "client", request.remoteAddress().host())
+                    .increment();
+
             if (!checkRateLimit(request)) {
+                prometheusRegistry.counter("rate_limit_exceeded_total").increment();
                 request.response()
                         .setStatusCode(429)
                         .end(new JsonObject()
@@ -136,6 +155,7 @@ public class Fibonacci extends AbstractVerticle {
             } else if (request.method().name().equals("GET") && request.path().equals("/fibonacci")) {
                 handleGetRequest(request);
             } else {
+                prometheusRegistry.counter("http_errors_total", "type", "not_found").increment();
                 request.response()
                         .setStatusCode(404)
                         .end(new JsonObject()
@@ -146,8 +166,10 @@ public class Fibonacci extends AbstractVerticle {
 
         server.listen(8080, result -> {
             if (result.succeeded()) {
+                logger.info("HTTP server started successfully on port 8080");
                 startPromise.complete();
             } else {
+                logger.error("HTTP server failed to start", result.cause());
                 startPromise.fail(result.cause());
             }
         });
@@ -155,7 +177,7 @@ public class Fibonacci extends AbstractVerticle {
         vertx.setPeriodic(300000, id -> cleanupOldRateLimiters());
     }
 
-    private boolean checkRateLimit(HttpServerRequest request) {
+    private boolean checkRateLimit(@NotNull HttpServerRequest request) {
         String clientId = request.remoteAddress().host();
 
         try {
@@ -174,8 +196,18 @@ public class Fibonacci extends AbstractVerticle {
             try {
                 JsonObject json = body.toJsonObject();
                 String input = json.getString("number");
+                if (input == null || input.trim().isEmpty()) {
+                    prometheusRegistry.counter("http_errors_total", "type", "bad_request").increment();
+                    request.response()
+                            .setStatusCode(400)
+                            .end(new JsonObject()
+                                    .put("error", "Missing 'number' field")
+                                    .encode());
+                    return;
+                }
                 processWithCircuitBreaker(request, input);
             } catch (Exception e) {
+                prometheusRegistry.counter("http_errors_total", "type", "bad_request").increment();
                 request.response()
                         .setStatusCode(400)
                         .end(new JsonObject()
@@ -190,6 +222,7 @@ public class Fibonacci extends AbstractVerticle {
         if (input != null) {
             processWithCircuitBreaker(request, input);
         } else {
+            prometheusRegistry.counter("http_errors_total", "type", "bad_request").increment();
             request.response()
                     .setStatusCode(400)
                     .end(new JsonObject()
@@ -211,9 +244,11 @@ public class Fibonacci extends AbstractVerticle {
                             promise.complete();
                         })
                         .exceptionally(ex -> {
+                            prometheusRegistry.counter("http_errors_total", "type", "internal_error").increment();
                             promise.fail(ex.getCause());
                             return null;
                         }), fallback -> {
+            prometheusRegistry.counter("circuit_breaker_rejections").increment();
             request.response()
                     .setStatusCode(503)
                     .end(new JsonObject()
@@ -227,11 +262,23 @@ public class Fibonacci extends AbstractVerticle {
     @Contract("_ -> new")
     private @NotNull CompletableFuture<Complex> processRequest(String input) {
         return CompletableFuture.supplyAsync(() -> {
+            long startTime = System.nanoTime();
             try {
                 Complex z = parseComplex(input);
-                return execute(z).join();
+                Complex result = execute(z).join();
+
+                long duration = System.nanoTime() - startTime;
+                prometheusRegistry.timer("fibonacci_calculation_time_nanoseconds")
+                        .record(duration, TimeUnit.NANOSECONDS);
+
+                prometheusRegistry.counter("fibonacci_calculations_total").increment();
+                return result;
             } catch (NumberFormatException e) {
-                throw new RuntimeException(e.getMessage());
+                prometheusRegistry.counter("calculation_errors_total", "type", "parse_error").increment();
+                throw new RuntimeException("Invalid number format: " + e.getMessage());
+            } catch (Exception e) {
+                prometheusRegistry.counter("calculation_errors_total", "type", "computation_error").increment();
+                throw new RuntimeException("Computation failed: " + e.getMessage());
             }
         }, executorService);
     }
@@ -246,15 +293,23 @@ public class Fibonacci extends AbstractVerticle {
         return getFromCacheAsync(key)
                 .thenCompose(cachedResult -> {
                     if (cachedResult != null) {
+                        prometheusRegistry.counter("redis_cache_total", "type", "hit").increment();
                         return CompletableFuture.completedFuture(cachedResult);
                     }
 
+                    prometheusRegistry.counter("redis_cache_total", "type", "miss").increment();
                     return computeFibonacci(z)
                             .thenCompose(result -> saveToCacheAsync(key, result)
                                     .thenApply(__ -> result)
-                                    .exceptionally(ex -> result));
+                                    .exceptionally(ex -> {
+                                        prometheusRegistry.counter("redis_errors_total").increment();
+                                        return result;
+                                    }));
                 })
-                .exceptionally(ex -> computeFibonacci(z).join());
+                .exceptionally(ex -> {
+                    prometheusRegistry.counter("redis_errors_total").increment();
+                    return computeFibonacci(z).join();
+                });
     }
 
     @Contract("_ -> new")
@@ -378,6 +433,7 @@ public class Fibonacci extends AbstractVerticle {
 
     @Override
     public void stop() {
+        logger.info("Stopping Fibonacci verticle");
         if (server != null) {
             server.close();
         }
@@ -386,6 +442,9 @@ public class Fibonacci extends AbstractVerticle {
         }
         if (circuitBreaker != null) {
             circuitBreaker.close();
+        }
+        if (prometheusRegistry != null) {
+            prometheusRegistry.close();
         }
     }
 

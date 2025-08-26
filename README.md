@@ -58,8 +58,10 @@ docker-compose -f <path_to_compose.yaml> up -d
 ```
 
 Services:
-- **Application**: http://localhost:8080
-- **Redis**: localhost:6379
+- **Application**: localhost:8080
+- **Redis** localhost:6379
+- **Prometheus** localhost:9090
+- **Grafana** localhost:3000
 
 ## Technology Stack
 

@@ -25,24 +25,24 @@ curl -X POST http://localhost:8080/fibonacci \
 
 **Number formats accepted:**
 - `"5"` (real number) 
-- `"3.5,2.1"` (comma separator, but note that the imaginary unit is omitted in requests)
-- `"3.5+2.1i"` (complex notation)
-- `"2.1i"` (imaginary number)
+- `"3.5+2.1"` (comma separator, but note that the imaginary unit is omitted in 
 
 ## Mathematical Approach
 
 This implementation uses the generalized Binet's formula for complex numbers:
 
 ```
-F(z) = [φᶻ - ψᶻ] / √5
+F(z) = (φ^z - ψ^z)/(2φ-1)
+
 where:
-φ = (1 + √5)/2 ≈ 1.618 (golden ratio)
+
+φ = (1 + √5)/2 ≈ 1.618 (golden ratio), /quad
 ψ = (1 - √5)/2 ≈ -0.618
 ```
 
 For complex exponentiation, I use logarithmic form:
-```
-φᶻ = exp(z × ln(φ))
+```math
+φ^z = exp(z × ln(φ))
 ```
 
 ### Why This Approach?

@@ -36,19 +36,19 @@ F(z) = (φ^z - ψ^z)/(2φ-1)
 
 where:
 
-φ = (1 + √5)/2 ≈ 1.618 (golden ratio), /quad
+φ = (1 + √5)/2 ≈ 1.618 (golden ratio),
 ψ = (1 - √5)/2 ≈ -0.618
 ```
 
 For complex exponentiation, I use logarithmic form:
-```math
+```
 φ^z = exp(z × ln(φ))
 ```
 
 ### Why This Approach?
 - **Iterative methods**: Only work for integers, O(n) complexity
 - **Matrix exponentiation**: Difficult to generalize for complex exponents
-- **Binet's formula**: Natural extension to complex plane with O(1) computation time (but the computations themselves are algorithmically not that fancy, but this is the tradeoff)
+- **Binet's formula**: Natural extension to complex plane with O(1) computation time (but the computations themselves are algorithmically not that fancy, but this is the tradeoff). But choosing the exponentiation with the logarithms holds due to the simplicity of calculating the exponent, without precision loss in comparison to the basic formula.
 
 ## Deployment
 

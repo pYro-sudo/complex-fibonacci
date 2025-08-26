@@ -48,12 +48,12 @@
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web</artifactId>
-      <version>4.4.0</version>
+      <version>4.5.18</version>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-redis-client</artifactId>
-      <version>4.4.0</version>
+      <version>4.5.18</version>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -63,7 +63,7 @@
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-circuit-breaker</artifactId>
-      <version>4.4.6</version>
+      <version>4.5.18</version>
     </dependency>
     <dependency>
       <groupId>io.github.resilience4j</groupId>
@@ -75,21 +75,38 @@
       <artifactId>resilience4j-micrometer</artifactId>
       <version>2.0.2</version>
     </dependency>
-      <dependency>
-          <groupId>org.jetbrains</groupId>
-          <artifactId>annotations</artifactId>
-          <version>26.0.2</version>
-          <scope>compile</scope>
-      </dependency>
+    <dependency>
+      <groupId>org.jetbrains</groupId>
+      <artifactId>annotations</artifactId>
+      <version>26.0.2</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-web-client</artifactId>
+      <version>4.5.18</version>
+    </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-micrometer-metrics</artifactId>
-      <version>5.0.3</version>
+      <version>4.5.18</version>
     </dependency>
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
       <version>1.11.7</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.9.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-junit5</artifactId>
+      <version>4.5.18</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 

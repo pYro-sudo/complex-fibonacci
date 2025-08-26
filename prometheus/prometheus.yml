@@ -6,7 +6,7 @@ global:
 scrape_configs:
   - job_name: 'fibonacci-app'
     static_configs:
-      - targets: ['fib-app:8080']
+      - targets: ['localhost:8080']
     metrics_path: /metrics
     scrape_interval: 5s
     honor_labels: true
@@ -20,4 +20,5 @@ scrape_configs:
       - targets: ['redis:6379']
 
 rule_files:
+
   - 'alert.rules.yml'

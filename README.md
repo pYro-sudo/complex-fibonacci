@@ -53,7 +53,7 @@ For complex exponentiation, I use logarithmic form:
 ## Deployment
 
 ```bash
-docker-compose up -d
+docker-compose -f <path_to_compose.yaml> up -d
 ```
 
 Services:

@@ -334,27 +334,20 @@ public class Fibonacci extends AbstractVerticle {
     private @NotNull CompletableFuture<Complex> getFromCacheAsync(String key) {
         CompletableFuture<Complex> future = new CompletableFuture<>();
 
-        vertx.executeBlocking(promise ->
-                redisAPI.get(key)
-                        .onSuccess(response -> {
-                            if (response != null) {
-                                try {
-                                    Complex result = parseComplexFromCache(response.toString());
-                                    promise.complete(result);
-                                } catch (Exception e) {
-                                    promise.fail(e);
-                                }
-                            } else {
-                                promise.complete(null);
-                            }
-                        })
-                        .onFailure(promise::fail), false, result -> {
-            if (result.succeeded()) {
-                future.complete((Complex) result.result());
-            } else {
-                future.completeExceptionally(result.cause());
-            }
-        });
+        redisAPI.get(key)
+                .onSuccess(response -> {
+                    if (response != null) {
+                        try {
+                            Complex result = parseComplexFromCache(response.toString());
+                            future.complete(result);
+                        } catch (Exception e) {
+                            future.completeExceptionally(e);
+                        }
+                    } else {
+                        future.complete(null);
+                    }
+                })
+                .onFailure(future::completeExceptionally);
 
         return future;
     }
@@ -362,18 +355,10 @@ public class Fibonacci extends AbstractVerticle {
     private @NotNull CompletableFuture<Void> saveToCacheAsync(String key, Complex result) {
         CompletableFuture<Void> future = new CompletableFuture<>();
 
-        vertx.executeBlocking(promise -> {
-            String value = formatComplexForCache(result);
-            redisAPI.setex(key, "3600", value)
-                    .onSuccess(__ -> promise.complete())
-                    .onFailure(promise::fail);
-        }, false, asyncResult -> {
-            if (asyncResult.succeeded()) {
-                future.complete(null);
-            } else {
-                future.completeExceptionally(asyncResult.cause());
-            }
-        });
+        String value = formatComplexForCache(result);
+        redisAPI.setex(key, "3600", value)
+                .onSuccess(__ -> future.complete(null))
+                .onFailure(future::completeExceptionally);
 
         return future;
     }

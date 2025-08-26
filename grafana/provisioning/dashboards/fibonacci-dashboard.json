@@ -68,5 +68,6 @@
       "to": "now"
     }
   },
+  "title" : "Fibonacci Dashboard",
   "overwrite": true
 }

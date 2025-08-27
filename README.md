@@ -1,6 +1,6 @@
 # Fibonacci Calculator
 
-RESTful microservice for calculating Fibonacci numbers in the complex domain using Binet's formula implementation.
+RESTful microservice for calculating Fibonacci numbers in the complex domain using Binet's formula.
 
 ## Features
 

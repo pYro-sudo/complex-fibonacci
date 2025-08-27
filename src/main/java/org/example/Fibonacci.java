@@ -2,6 +2,7 @@ package org.example;
 
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
+import io.micrometer.prometheus.PrometheusConfig;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import io.vertx.circuitbreaker.CircuitBreaker;
 import io.vertx.circuitbreaker.CircuitBreakerOptions;
@@ -50,8 +51,8 @@ public class Fibonacci extends AbstractVerticle {
     public void start(Promise<Void> startPromise) {
         logger.info("Starting Fibonacci verticle with Prometheus metrics");
 
-        prometheusRegistry = new io.micrometer.prometheus.PrometheusMeterRegistry(
-                io.micrometer.prometheus.PrometheusConfig.DEFAULT);
+        prometheusRegistry = new PrometheusMeterRegistry(
+                PrometheusConfig.DEFAULT);
 
         executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
 
@@ -154,6 +155,8 @@ public class Fibonacci extends AbstractVerticle {
                 handlePostRequest(request);
             } else if (request.method().name().equals("GET") && request.path().equals("/fibonacci")) {
                 handleGetRequest(request);
+            } else if (request.method().name().equals("GET") && request.path().equals("/metrics")) {
+                request.response().putHeader("Content-Type", "text/plain; version=0.0.4").end(prometheusRegistry.scrape());
             } else {
                 prometheusRegistry.counter("http_errors_total", "type", "not_found").increment();
                 request.response()
